@@ -42,6 +42,7 @@ FunctionPass *createSIFoldOperandsLegacyPass();
 FunctionPass *createSIPeepholeSDWALegacyPass();
 FunctionPass *createSILowerI1CopiesLegacyPass();
 FunctionPass *createSIShrinkInstructionsLegacyPass();
+FunctionPass *createSIFormInvariantLDSReadPairsLegacyPass();
 FunctionPass *createSILoadStoreOptimizerLegacyPass();
 FunctionPass *createSIWholeQuadModeLegacyPass();
 FunctionPass *createSIFixControlFlowLiveIntervalsPass();
@@ -192,6 +193,9 @@ extern char &SIPeepholeSDWALegacyID;
 
 void initializeSIShrinkInstructionsLegacyPass(PassRegistry &);
 extern char &SIShrinkInstructionsLegacyID;
+
+void initializeSIFormInvariantLDSReadPairsLegacyPass(PassRegistry &);
+extern char &SIFormInvariantLDSReadPairsLegacyID;
 
 void initializeSIFixSGPRCopiesLegacyPass(PassRegistry &);
 extern char &SIFixSGPRCopiesLegacyID;

@@ -15,6 +15,7 @@
 #include "llvm/ADT/Statistic.h"
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/LoopInfo.h"
+#include "llvm/Analysis/TargetTransformInfo.h"
 #include "llvm/IR/Dominators.h"
 #include "llvm/InitializePasses.h"
 #include "llvm/Support/Debug.h"
@@ -26,6 +27,8 @@ using namespace llvm;
 
 STATISTIC(NumSunk, "Number of instructions sunk");
 STATISTIC(NumSinkIter, "Number of sinking iterations");
+STATISTIC(NumBlockedByBarrier,
+          "Number of instructions not sunk past a code-motion barrier");
 
 static bool isSafeToMove(Instruction *Inst, AliasAnalysis &AA,
                          SmallPtrSetImpl<Instruction *> &Stores) {
@@ -171,7 +174,7 @@ static bool SinkInstruction(Instruction *Inst,
 }
 
 static bool ProcessBlock(BasicBlock &BB, DominatorTree &DT, LoopInfo &LI,
-                         AAResults &AA) {
+                         AAResults &AA, const TargetTransformInfo *TTI) {
   // Don't bother sinking code out of unreachable blocks. In addition to being
   // unprofitable, it can also lead to infinite looping, because in an
   // unreachable loop there may be nowhere to stop.
@@ -184,6 +187,10 @@ static bool ProcessBlock(BasicBlock &BB, DominatorTree &DT, LoopInfo &LI,
   --I;
   bool ProcessedBegin = false;
   SmallPtrSet<Instruction *, 8> Stores;
+  // Sinking moves an instruction into a successor block, i.e. past every
+  // instruction that follows it here. Once a target code-motion barrier has
+  // been seen (walking bottom-up), nothing above it may be sunk.
+  bool BelowBarrier = false;
   do {
     Instruction *Inst = &*I; // The instruction to sink.
 
@@ -193,8 +200,22 @@ static bool ProcessBlock(BasicBlock &BB, DominatorTree &DT, LoopInfo &LI,
     if (!ProcessedBegin)
       --I;
 
+    if (TTI && TTI->isCodeMotionBarrier(*Inst)) {
+      BelowBarrier = true;
+      continue;
+    }
+
     if (Inst->isDebugOrPseudoInst())
       continue;
+
+    if (BelowBarrier) {
+      if (!Inst->use_empty())
+        ++NumBlockedByBarrier;
+      // Still record stores: isSafeToMove relies on seeing them.
+      if (Inst->mayWriteToMemory())
+        Stores.insert(Inst);
+      continue;
+    }
 
     if (SinkInstruction(Inst, Stores, DT, LI, AA)) {
       ++NumSunk;
@@ -208,7 +229,8 @@ static bool ProcessBlock(BasicBlock &BB, DominatorTree &DT, LoopInfo &LI,
 }
 
 static bool iterativelySinkInstructions(Function &F, DominatorTree &DT,
-                                        LoopInfo &LI, AAResults &AA) {
+                                        LoopInfo &LI, AAResults &AA,
+                                        const TargetTransformInfo *TTI) {
   bool MadeChange, EverMadeChange = false;
 
   do {
@@ -216,7 +238,7 @@ static bool iterativelySinkInstructions(Function &F, DominatorTree &DT,
     LLVM_DEBUG(dbgs() << "Sinking iteration " << NumSinkIter << "\n");
     // Process all basic blocks.
     for (BasicBlock &I : F)
-      MadeChange |= ProcessBlock(I, DT, LI, AA);
+      MadeChange |= ProcessBlock(I, DT, LI, AA, TTI);
     EverMadeChange |= MadeChange;
     NumSinkIter++;
   } while (MadeChange);
@@ -228,8 +250,9 @@ PreservedAnalyses SinkingPass::run(Function &F, FunctionAnalysisManager &AM) {
   auto &DT = AM.getResult<DominatorTreeAnalysis>(F);
   auto &LI = AM.getResult<LoopAnalysis>(F);
   auto &AA = AM.getResult<AAManager>(F);
+  auto &TTI = AM.getResult<TargetIRAnalysis>(F);
 
-  if (!iterativelySinkInstructions(F, DT, LI, AA))
+  if (!iterativelySinkInstructions(F, DT, LI, AA, &TTI))
     return PreservedAnalyses::all();
 
   PreservedAnalyses PA;
@@ -249,8 +272,9 @@ namespace {
       auto &DT = getAnalysis<DominatorTreeWrapperPass>().getDomTree();
       auto &LI = getAnalysis<LoopInfoWrapperPass>().getLoopInfo();
       auto &AA = getAnalysis<AAResultsWrapperPass>().getAAResults();
+      auto &TTI = getAnalysis<TargetTransformInfoWrapperPass>().getTTI(F);
 
-      return iterativelySinkInstructions(F, DT, LI, AA);
+      return iterativelySinkInstructions(F, DT, LI, AA, &TTI);
     }
 
     void getAnalysisUsage(AnalysisUsage &AU) const override {
@@ -259,6 +283,7 @@ namespace {
       AU.addRequired<AAResultsWrapperPass>();
       AU.addRequired<DominatorTreeWrapperPass>();
       AU.addRequired<LoopInfoWrapperPass>();
+      AU.addRequired<TargetTransformInfoWrapperPass>();
       AU.addPreserved<DominatorTreeWrapperPass>();
       AU.addPreserved<LoopInfoWrapperPass>();
     }
@@ -270,6 +295,7 @@ INITIALIZE_PASS_BEGIN(SinkingLegacyPass, "sink", "Code sinking", false, false)
 INITIALIZE_PASS_DEPENDENCY(LoopInfoWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(DominatorTreeWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(AAResultsWrapperPass)
+INITIALIZE_PASS_DEPENDENCY(TargetTransformInfoWrapperPass)
 INITIALIZE_PASS_END(SinkingLegacyPass, "sink", "Code sinking", false, false)
 
 FunctionPass *llvm::createSinkingPass() { return new SinkingLegacyPass(); }
