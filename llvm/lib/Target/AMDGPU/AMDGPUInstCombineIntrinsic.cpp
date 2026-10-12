@@ -1179,6 +1179,41 @@ std::optional<Instruction *>
 GCNTTIImpl::instCombineIntrinsic(InstCombiner &IC, IntrinsicInst &II) const {
   Intrinsic::ID IID = II.getIntrinsicID();
   switch (IID) {
+  case Intrinsic::amdgcn_cvt_pk_fp8_f32:
+  case Intrinsic::amdgcn_cvt_pk_bf8_f32:
+  case Intrinsic::amdgcn_cvt_pk_fp8_f32_e5m3: {
+    // Each conversion writes one 16-bit half and preserves the other from old.
+    // If every user overwrites the preserved half, the initial old is dead.
+    Value *Old = II.getArgOperand(2);
+    if (isa<UndefValue>(Old) || II.use_empty())
+      return std::nullopt;
+
+    // Attributes can constrain otherwise-unused bits of the intermediate value.
+    if (II.isPassingUndefUB(2) || II.paramHasAttr(2, Attribute::Range) ||
+        II.hasRetAttr(Attribute::NoUndef) || II.hasRetAttr(Attribute::Range) ||
+        II.hasPoisonGeneratingMetadata())
+      return std::nullopt;
+
+    bool WordSel = cast<ConstantInt>(II.getArgOperand(3))->isOne();
+    for (const Use &U : II.uses()) {
+      auto *User = dyn_cast<IntrinsicInst>(U.getUser());
+      if (!User || U.getOperandNo() != 2)
+        return std::nullopt;
+      Intrinsic::ID UID = User->getIntrinsicID();
+      if (UID != Intrinsic::amdgcn_cvt_pk_fp8_f32 &&
+          UID != Intrinsic::amdgcn_cvt_pk_bf8_f32 &&
+          UID != Intrinsic::amdgcn_cvt_pk_fp8_f32_e5m3)
+        return std::nullopt;
+      if (User->isPassingUndefUB(2) ||
+          User->paramHasAttr(2, Attribute::Range) ||
+          cast<ConstantInt>(User->getArgOperand(3))->isOne() == WordSel)
+        return std::nullopt;
+    }
+
+    // Undef keeps the converted half defined while the other half is discarded
+    // by the users. This avoids materializing old before the first conversion.
+    return IC.replaceOperand(II, 2, UndefValue::get(Old->getType()));
+  }
   case Intrinsic::amdgcn_implicitarg_ptr: {
     if (II.getFunction()->hasFnAttribute("amdgpu-no-implicitarg-ptr"))
       return IC.replaceInstUsesWith(II, PoisonValue::get(II.getType()));
