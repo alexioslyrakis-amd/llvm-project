@@ -259,6 +259,7 @@ public:
   bool tryFoldCndMask(MachineInstr &MI) const;
   bool tryFoldRedundantAND(MachineInstr &ChildMI) const;
   bool tryFoldAndExec(MachineInstr &MI) const;
+  bool tryRemoveDeadOldFromPackedConversion(MachineInstr &MI) const;
   bool foldInstOperand(MachineInstr &MI, const FoldableDef &OpToFold) const;
 
   bool foldCopyToAGPRRegSequence(MachineInstr *CopyMI) const;
@@ -3169,6 +3170,58 @@ bool SIFoldOperandsImpl::tryOptimizeAGPRPhis(MachineBasicBlock &MBB) {
   return Changed;
 }
 
+// These forms write one half of a 32-bit register and preserve the other half
+// from vdst_in. The true16 forms use explicit subregister operations instead.
+static bool isPackedF32ToF8(unsigned Opc) {
+  switch (Opc) {
+  case AMDGPU::V_CVT_PK_FP8_F32_e64:
+  case AMDGPU::V_CVT_PK_BF8_F32_e64:
+  case AMDGPU::V_CVT_PK_FP8_F32_gfx1250_e64:
+  case AMDGPU::V_CVT_PK_FP8_F32_fake16_e64:
+  case AMDGPU::V_CVT_PK_BF8_F32_fake16_e64:
+  case AMDGPU::V_CVT_PK_FP8_F32_gfx1250_fake16_e64:
+    return true;
+  default:
+    return false;
+  }
+}
+
+bool SIFoldOperandsImpl::tryRemoveDeadOldFromPackedConversion(
+    MachineInstr &MI) const {
+  if (!isPackedF32ToF8(MI.getOpcode()))
+    return false;
+
+  MachineOperand &Old = *TII->getNamedOperand(MI, AMDGPU::OpName::vdst_in);
+  const MachineOperand &Dst = MI.getOperand(0);
+  if (Old.isUndef() || !Dst.getReg().isVirtual() || Dst.getSubReg())
+    return false;
+
+  auto GetWordSel = [this](const MachineInstr &I) {
+    return TII->getNamedOperand(I, AMDGPU::OpName::src0_modifiers)->getImm() &
+           SISrcMods::DST_OP_SEL;
+  };
+  auto WordSel = GetWordSel(MI);
+
+  // Only handle direct packed conversion users. Every use must overwrite the
+  // preserved half, without observing it through another operand.
+  for (const MachineOperand &Use : MRI->use_nodbg_operands(Dst.getReg())) {
+    if (Use.isUndef())
+      continue;
+    const MachineInstr &User = *Use.getParent();
+    if (Use.getSubReg() || !isPackedF32ToF8(User.getOpcode()) ||
+        &Use != TII->getNamedOperand(User, AMDGPU::OpName::vdst_in) ||
+        GetWordSel(User) == WordSel ||
+        execMayBeModifiedBeforeUse(*MRI, Dst.getReg(), MI, User))
+      return false;
+  }
+
+  // No user observes the preserved half, so the initial value need not be
+  // materialized. Leave its definition for dead instruction elimination.
+  Old.setIsUndef();
+  Old.setIsKill(false);
+  return true;
+}
+
 bool SIFoldOperandsImpl::run(MachineFunction &MF, const MachineLoopInfo *MLI) {
   this->MF = &MF;
   MRI = &MF.getRegInfo();
@@ -3189,6 +3242,7 @@ bool SIFoldOperandsImpl::run(MachineFunction &MF, const MachineLoopInfo *MLI) {
     MachineOperand *CurrentKnownM0Val = nullptr;
     for (auto &MI : make_early_inc_range(*MBB)) {
       Changed |= tryFoldCndMask(MI);
+      Changed |= tryRemoveDeadOldFromPackedConversion(MI);
 
       // PeepholeOptimizer may have folded an inline immediate directly onto an
       // instruction operand without materializing it into a register first.
