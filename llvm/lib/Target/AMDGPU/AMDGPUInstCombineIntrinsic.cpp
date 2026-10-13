@@ -1198,7 +1198,7 @@ GCNTTIImpl::instCombineIntrinsic(InstCombiner &IC, IntrinsicInst &II) const {
     // Only handle packed conversion users here. Other uses, such as truncations
     // or masks, may also discard the preserved half but need separate analysis.
     for (const Use &U : II.uses()) {
-      IntrinsicInst *User = dyn_cast<IntrinsicInst>(U.getUser());
+      auto *User = dyn_cast<IntrinsicInst>(U.getUser());
       if (!User || U.getOperandNo() != 2)
         return std::nullopt;
       Intrinsic::ID UID = User->getIntrinsicID();
