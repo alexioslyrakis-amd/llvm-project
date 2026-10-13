@@ -684,6 +684,7 @@ extern "C" LLVM_ABI LLVM_EXTERNAL_VISIBILITY void LLVMInitializeAMDGPUTarget() {
   initializeSIFoldOperandsLegacyPass(*PR);
   initializeSIPeepholeSDWALegacyPass(*PR);
   initializeSIShrinkInstructionsLegacyPass(*PR);
+  initializeSIFormInvariantLDSReadPairsLegacyPass(*PR);
   initializeSIOptimizeExecMaskingPreRALegacyPass(*PR);
   initializeSIOptimizeVGPRLiveRangeLegacyPass(*PR);
   initializeAMDGPUNextUseAnalysisLegacyPassPass(*PR);
@@ -1759,6 +1760,8 @@ void GCNPassConfig::addMachineSSAOptimization() {
     addPass(&SIFoldOperandsLegacyID);
   }
   addPass(&DeadMachineInstructionElimID);
+  // Before the REG_SEQUENCEs are lowered, so the RA sees one definition.
+  addPass(createSIFormInvariantLDSReadPairsLegacyPass());
   addPass(createSIShrinkInstructionsLegacyPass());
 }
 
