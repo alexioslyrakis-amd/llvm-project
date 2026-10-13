@@ -1,0 +1,101 @@
+From e95f5833b05704919a13d9030aaf3d4c68500423 Mon Sep 17 00:00:00 2001
+From: Alexios Lyrakis <alexios.lyrakis@amd.com>
+Date: Tue, 29 Sep 2026 11:43:18 +0100
+Subject: [PATCH] [AMDGPU] Do not wait for LDS DMA before an invariant LDS load
+
+SIInsertWaitcnts makes an LDS load wait (vmcnt) for in-flight LDS DMA
+(buffer/global load ... lds) unless alias information proves the DMA
+target and the load do not overlap. Pointers without alias metadata
+(e.g. inttoptr-based LDS addressing) therefore wait for every DMA.
+
+A load marked invariant reads memory that does not change while it is
+dereferenceable, so no in-flight DMA can be writing it: skip the wait.
+-amdgpu-waitcnt-invariant-lds-skip-dma=false restores the old behavior.
+
+On an fp8 FMHA prefill kernel (gfx950) this removes an s_waitcnt vmcnt(0)
+on the next tile's global->LDS DMA from every loop iteration (~4%).
+---
+ llvm/lib/Target/AMDGPU/SIInsertWaitcnts.cpp   | 11 +++++
+ .../AMDGPU/lds-dma-waitcnt-invariant-load.ll  | 41 +++++++++++++++++++
+ 2 files changed, 52 insertions(+)
+ create mode 100644 llvm/test/CodeGen/AMDGPU/lds-dma-waitcnt-invariant-load.ll
+
+diff --git a/llvm/lib/Target/AMDGPU/SIInsertWaitcnts.cpp b/llvm/lib/Target/AMDGPU/SIInsertWaitcnts.cpp
+index 22247238d554..ae971a720998 100644
+--- a/llvm/lib/Target/AMDGPU/SIInsertWaitcnts.cpp
++++ b/llvm/lib/Target/AMDGPU/SIInsertWaitcnts.cpp
+@@ -54,6 +54,11 @@ static cl::opt<bool>
+                                "s_waitcnt vmcnt(0) expcnt(0) lgkmcnt(0)"),
+                       cl::init(false), cl::Hidden);
+ 
++static cl::opt<bool> InvariantLoadSkipsLDSDMAWait(
++    "amdgpu-waitcnt-invariant-lds-skip-dma",
++    cl::desc("Do not wait for in-flight LDS DMA before an invariant LDS load"),
++    cl::init(true), cl::Hidden);
++
+ static cl::opt<bool> ForceEmitZeroLoadFlag(
+     "amdgpu-waitcnt-load-forcezero",
+     cl::desc("Force all waitcnt load counters to wait until 0"),
+@@ -2435,6 +2440,12 @@ bool SIInsertWaitcnts::generateWaitcntInstBefore(
+         if (TII.mayWriteLDSThroughDMA(MI))
+           continue;
+ 
++        // An invariant load reads memory that does not change while it is
++        // dereferenceable, so an in-flight LDS DMA cannot be writing it.
++        if (InvariantLoadSkipsLDSDMAWait && Memop->isLoad() &&
++            !Memop->isStore() && Memop->isInvariant())
++          continue;
++
+         // LOAD_CNT is only relevant to vgpr or LDS.
+         unsigned TID = LDSDMA_BEGIN;
+         if (Ptr && Memop->getAAInfo()) {
+diff --git a/llvm/test/CodeGen/AMDGPU/lds-dma-waitcnt-invariant-load.ll b/llvm/test/CodeGen/AMDGPU/lds-dma-waitcnt-invariant-load.ll
+new file mode 100644
+index 000000000000..f87b3a68058c
+--- /dev/null
++++ b/llvm/test/CodeGen/AMDGPU/lds-dma-waitcnt-invariant-load.ll
+@@ -0,0 +1,41 @@
++; RUN: llc -mtriple=amdgcn-amd-amdhsa -mcpu=gfx950 < %s | FileCheck %s --check-prefixes=CHECK,SKIP
++; RUN: llc -mtriple=amdgcn-amd-amdhsa -mcpu=gfx950 -amdgpu-waitcnt-invariant-lds-skip-dma=false < %s | FileCheck %s --check-prefixes=CHECK,NOSKIP
++
++; LDS loads through a pointer without alias information must normally wait for
++; any in-flight LDS DMA. A load marked !invariant.load reads memory that does not
++; change, so it cannot observe the DMA and SIInsertWaitcnts does not wait.
++
++@lds.dma = internal addrspace(3) global [64 x float] poison, align 16
++
++declare void @llvm.amdgcn.raw.buffer.load.lds(<4 x i32> %rsrc, ptr addrspace(3) nocapture, i32 %size, i32 %voffset, i32 %soffset, i32 %offset, i32 %aux)
++
++; CHECK-LABEL: invariant_lds_load_after_dma:
++; CHECK:       buffer_load_dword v{{[0-9]+}}, s[{{[0-9]+:[0-9]+}}], 0 offen lds
++; SKIP-NOT:    s_waitcnt vmcnt
++; NOSKIP:      s_waitcnt vmcnt(0)
++; CHECK:       ds_read_b32
++define amdgpu_kernel void @invariant_lds_load_after_dma(<4 x i32> %rsrc, i32 %voff, ptr addrspace(3) %q, ptr addrspace(1) %out) {
++  call void @llvm.amdgcn.raw.buffer.load.lds(<4 x i32> %rsrc, ptr addrspace(3) @lds.dma, i32 4, i32 %voff, i32 0, i32 0, i32 0)
++  %tid = call i32 @llvm.amdgcn.workitem.id.x()
++  %p = getelementptr float, ptr addrspace(3) %q, i32 %tid
++  %v = load float, ptr addrspace(3) %p, align 4, !invariant.load !0
++  store float %v, ptr addrspace(1) %out, align 4
++  ret void
++}
++
++; CHECK-LABEL: plain_lds_load_after_dma:
++; CHECK:       buffer_load_dword v{{[0-9]+}}, s[{{[0-9]+:[0-9]+}}], 0 offen lds
++; CHECK:       s_waitcnt vmcnt(0)
++; CHECK:       ds_read_b32
++define amdgpu_kernel void @plain_lds_load_after_dma(<4 x i32> %rsrc, i32 %voff, ptr addrspace(3) %q, ptr addrspace(1) %out) {
++  call void @llvm.amdgcn.raw.buffer.load.lds(<4 x i32> %rsrc, ptr addrspace(3) @lds.dma, i32 4, i32 %voff, i32 0, i32 0, i32 0)
++  %tid = call i32 @llvm.amdgcn.workitem.id.x()
++  %p = getelementptr float, ptr addrspace(3) %q, i32 %tid
++  %v = load float, ptr addrspace(3) %p, align 4
++  store float %v, ptr addrspace(1) %out, align 4
++  ret void
++}
++
++declare i32 @llvm.amdgcn.workitem.id.x()
++
++!0 = !{}
+-- 
+2.43.0
+

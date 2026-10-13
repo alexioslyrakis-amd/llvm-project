@@ -1,0 +1,69 @@
+Historical log excerpts recovered on 2026-10-13.
+These were not rerun for the archive, and the four lit failures were not diagnosed here.
+
+Source: tmp/llvm-flydsl/lit_review.log
+-- Testing: 5062 tests, 6 workers --
+FAIL: LLVM :: CodeGen/AMDGPU/lto-lower-module-lds.ll (1 of 5062)
+FAIL: LLVM :: CodeGen/AMDGPU/anyext-s16-to-s64.ll (2 of 5062)
+FAIL: LLVM :: CodeGen/AMDGPU/amdgpu-llvm-debuginfo-analyzer.ll (3 of 5062)
+FAIL: LLVM :: CodeGen/AMDGPU/packed-fp64.ll (4 of 5062)
+********************
+Failed Tests (4):
+  LLVM :: CodeGen/AMDGPU/amdgpu-llvm-debuginfo-analyzer.ll
+  LLVM :: CodeGen/AMDGPU/anyext-s16-to-s64.ll
+  LLVM :: CodeGen/AMDGPU/lto-lower-module-lds.ll
+  LLVM :: CodeGen/AMDGPU/packed-fp64.ll
+
+
+Total Discovered Tests: 5062
+  Failed: 4 (0.08%)
+
+Source: tmp/llvm-flydsl/lit_amdgpu3.log
+-- Testing: 5063 tests, 6 workers --
+FAIL: LLVM :: CodeGen/AMDGPU/lto-lower-module-lds.ll (1 of 5063)
+FAIL: LLVM :: CodeGen/AMDGPU/anyext-s16-to-s64.ll (2 of 5063)
+FAIL: LLVM :: CodeGen/AMDGPU/amdgpu-llvm-debuginfo-analyzer.ll (3 of 5063)
+FAIL: LLVM :: CodeGen/AMDGPU/packed-fp64.ll (4 of 5063)
+********************
+Failed Tests (4):
+  LLVM :: CodeGen/AMDGPU/amdgpu-llvm-debuginfo-analyzer.ll
+  LLVM :: CodeGen/AMDGPU/anyext-s16-to-s64.ll
+  LLVM :: CodeGen/AMDGPU/lto-lower-module-lds.ll
+  LLVM :: CodeGen/AMDGPU/packed-fp64.ll
+
+
+Total Discovered Tests: 5063
+  Failed: 4 (0.08%)
+
+Source: tmp/llvm-rocm/build_remat-invariant-lds-loads.log
+[1/13] Generating VCSRevision.h
+[2/13] Building CXX object lib/MC/CMakeFiles/LLVMMC.dir/DXContainerInfo.cpp.o
+[3/13] Linking CXX static library lib/libLLVMMC.a
+[4/13] Building CXX object lib/Object/CMakeFiles/LLVMObject.dir/IRSymtab.cpp.o
+[5/13] Linking CXX static library lib/libLLVMObject.a
+[6/13] Building CXX object lib/Target/AMDGPU/CMakeFiles/LLVMAMDGPUCodeGen.dir/AMDGPUInstCombineIntrinsic.cpp.o
+[7/13] Building CXX object lib/Target/AMDGPU/CMakeFiles/LLVMAMDGPUCodeGen.dir/SIInsertWaitcnts.cpp.o
+[8/13] Building CXX object lib/Target/AMDGPU/CMakeFiles/LLVMAMDGPUCodeGen.dir/AMDGPUISelDAGToDAG.cpp.o
+[9/13] Building CXX object lib/CodeGen/AsmPrinter/CMakeFiles/LLVMAsmPrinter.dir/AsmPrinter.cpp.o
+[10/13] Linking CXX static library lib/libLLVMAsmPrinter.a
+[11/13] Linking CXX static library lib/libLLVMAMDGPUCodeGen.a
+[12/13] Linking CXX executable bin/opt
+clang++: warning: '-fuse-ld=' taking a path is deprecated; use '--ld-path=' instead [-Wfuse-ld-path]
+[13/13] Linking CXX executable bin/llc
+clang++: warning: '-fuse-ld=' taking a path is deprecated; use '--ld-path=' instead [-Wfuse-ld-path]
+
+Source: tmp/llvm-rocm/build_waitcnt-invariant-lds-dma.log
+[1/12] Generating VCSRevision.h
+[2/12] Building CXX object lib/MC/CMakeFiles/LLVMMC.dir/DXContainerInfo.cpp.o
+[3/12] Linking CXX static library lib/libLLVMMC.a
+[4/12] Building CXX object lib/Object/CMakeFiles/LLVMObject.dir/IRSymtab.cpp.o
+[5/12] Linking CXX static library lib/libLLVMObject.a
+[6/12] Building CXX object lib/Target/AMDGPU/CMakeFiles/LLVMAMDGPUCodeGen.dir/SIInsertWaitcnts.cpp.o
+[7/12] Building CXX object lib/Target/AMDGPU/CMakeFiles/LLVMAMDGPUCodeGen.dir/AMDGPUISelDAGToDAG.cpp.o
+[8/12] Building CXX object lib/CodeGen/AsmPrinter/CMakeFiles/LLVMAsmPrinter.dir/AsmPrinter.cpp.o
+[9/12] Linking CXX static library lib/libLLVMAsmPrinter.a
+[10/12] Linking CXX static library lib/libLLVMAMDGPUCodeGen.a
+[11/12] Linking CXX executable bin/llc
+clang++: warning: '-fuse-ld=' taking a path is deprecated; use '--ld-path=' instead [-Wfuse-ld-path]
+[12/12] Linking CXX executable bin/opt
+clang++: warning: '-fuse-ld=' taking a path is deprecated; use '--ld-path=' instead [-Wfuse-ld-path]

@@ -1,0 +1,76 @@
+{
+  "date": "2026-10-13",
+  "repository": "https://github.com/alexioslyrakis-amd/llvm-project",
+  "base": "e2a39f504fee836e4def9581bed817ecc327b9dc",
+  "branches": {
+    "alyr/remat-invariant-lds-loads": {
+      "commit": "e3142e5776793ac55fd4b35f2c3181d278c43c00",
+      "tree": "88281fb27bf6dec31daf89837e50ccbb89afc5d3",
+      "source_commit": "626c7b2501f5414e5a1f62d30f54ff53694061e1",
+      "files": [
+        "llvm/lib/Target/AMDGPU/AMDGPU.h",
+        "llvm/lib/Target/AMDGPU/AMDGPUTargetMachine.cpp",
+        "llvm/lib/Target/AMDGPU/CMakeLists.txt",
+        "llvm/lib/Target/AMDGPU/SIFormInvariantLDSReadPairs.cpp",
+        "llvm/lib/Target/AMDGPU/SIInstrInfo.cpp",
+        "llvm/lib/Target/AMDGPU/SIInstructions.td",
+        "llvm/test/CodeGen/AMDGPU/expand-ds-read-b256-invariant-pseudo.mir",
+        "llvm/test/CodeGen/AMDGPU/form-invariant-lds-read-pairs.mir",
+        "llvm/test/CodeGen/AMDGPU/llc-pipeline.ll"
+      ]
+    },
+    "alyr/waitcnt-invariant-lds-dma": {
+      "commit": "31b0fe83aac838123a2f61f6c5613e5c25669f54",
+      "tree": "b87991d1ee386cfe34c0b55a02fb4f41eb541527",
+      "source_commit": "e95f5833b05704919a13d9030aaf3d4c68500423",
+      "files": [
+        "llvm/lib/Target/AMDGPU/SIInsertWaitcnts.cpp",
+        "llvm/test/CodeGen/AMDGPU/lds-dma-waitcnt-invariant-load.ll"
+      ]
+    },
+    "alyr/sched-barrier-code-motion": {
+      "commit": "b7bd784d28c31ed891724fda4d77403fa675454d",
+      "tree": "23d2ebae478c2e8c8ea5c39dfae9df03d8bc1dcc",
+      "source_commit": "9f10b1e85ac0a701f72424e525436cf01f3026ec",
+      "files": [
+        "llvm/include/llvm/Analysis/TargetTransformInfo.h",
+        "llvm/include/llvm/Analysis/TargetTransformInfoImpl.h",
+        "llvm/lib/Analysis/TargetTransformInfo.cpp",
+        "llvm/lib/Target/AMDGPU/AMDGPUTargetTransformInfo.cpp",
+        "llvm/lib/Target/AMDGPU/AMDGPUTargetTransformInfo.h",
+        "llvm/lib/Target/AMDGPU/SIInstrInfo.cpp",
+        "llvm/lib/Transforms/Scalar/Sink.cpp",
+        "llvm/test/CodeGen/AMDGPU/machine-sink-sched-barrier.mir",
+        "llvm/test/Transforms/Sink/AMDGPU/lit.local.cfg",
+        "llvm/test/Transforms/Sink/AMDGPU/sched-barrier.ll"
+      ]
+    },
+    "alyr/fmha-llvm-experiments-backup": {
+      "commit": "9f10b1e85ac0a701f72424e525436cf01f3026ec",
+      "tree": "f07a3a10e8367d72b686b22705dc7dd31ce7f26b",
+      "source_commit": "9f10b1e85ac0a701f72424e525436cf01f3026ec",
+      "description": "Unmodified original combined FlyDSL experiment, including its ROCDL/lld prerequisite."
+    },
+    "alyr/cvt-pk-fp8-dead-old": {
+      "commit": "c1c659a557c0cbdb97cca8e5b00d17011a2b8d9e",
+      "existing_remote_branch": true
+    },
+    "alyr/cvt-pk-fp8-instcombine-backup": {
+      "commit": "0a73b72eb25a58be13455ccfb0717854369f50d5",
+      "existing_remote_branch": true
+    },
+    "alyr/cvt-pk-fp8-sifold-backup": {
+      "commit": "c1c659a557c0cbdb97cca8e5b00d17011a2b8d9e",
+      "existing_remote_branch": true
+    }
+  },
+  "validation": [
+    "Each contribution branch has exactly one commit above the original upstream base.",
+    "Rematerialization and waitcnt patches match the saved upstream prototypes byte for byte.",
+    "The scheduling branch contains the exact original scheduling changes, isolated from rematerialization.",
+    "git diff --check passed for each new contribution.",
+    "No compiler rebuild or new performance measurements were performed for this archive."
+  ],
+  "notes_branch": "alyr/llvm-contribution-notes",
+  "original_flydsl_base": "3e77a0cc645125bbb6524352de4d669094619771"
+}

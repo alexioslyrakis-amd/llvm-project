@@ -1,0 +1,92 @@
+{
+  "fp8-pr": {
+    "html_url": "https://github.com/llvm/llvm-project/pull/231556",
+    "title": "[AMDGPU] Avoid redundant FP8/BF8 initialization",
+    "body": "Packing four FP32 values into FP8/BF8 can emit a redundant `v_mov_b32` to initialize the destination before the first conversion, even though both halves are overwritten. I hit this in a FlyDSL FMHA kernel on gfx950.\n\n```llvm\n%lo = call i32 @llvm.amdgcn.cvt.pk.fp8.f32(float %a, float %b, i32 0, i1 false)\n%hi = call i32 @llvm.amdgcn.cvt.pk.fp8.f32(float %c, float %d, i32 %lo, i1 true)\n```\n\nFix: drop the old register dependency in `SIFoldOperands`, after instruction selection, when every user overwrites the preserved half in the same block with no change to `EXEC`. This handles the 32-bit packed instruction forms for both SelectionDAG and GlobalISel.\n\nThe MIR and codegen regression tests pass.\n\nNote: the [automated summary below](https://github.com/llvm/llvm-project/pull/231556#issuecomment-6149513240) still shows the earlier InstCombine version. The current patch works at the machine instruction level.\n\nAssisted-by: Codex\n",
+    "state": "open",
+    "updated_at": "2026-10-13T17:14:52Z",
+    "head": "c1c659a557c0cbdb97cca8e5b00d17011a2b8d9e"
+  },
+  "fp8-reviews": [
+    {
+      "html_url": "https://github.com/llvm/llvm-project/pull/231556#pullrequestreview-5507213277",
+      "body": "Could you address this in the selection patterns instead/",
+      "commit_id": "c1c659a557c0cbdb97cca8e5b00d17011a2b8d9e",
+      "submitted_at": "2026-10-13T17:09:28Z",
+      "author": "arsenm"
+    },
+    {
+      "html_url": "https://github.com/llvm/llvm-project/pull/231556#pullrequestreview-5507251134",
+      "body": "A pack of questions",
+      "commit_id": "c1c659a557c0cbdb97cca8e5b00d17011a2b8d9e",
+      "submitted_at": "2026-10-13T17:11:55Z",
+      "author": "krzysz00"
+    }
+  ],
+  "fp8-review-comments": [
+    {
+      "html_url": "https://github.com/llvm/llvm-project/pull/231556#discussion_r4261665857",
+      "body": "DOn't need -verify-machineinstrs ",
+      "commit_id": "c1c659a557c0cbdb97cca8e5b00d17011a2b8d9e",
+      "path": "llvm/test/CodeGen/AMDGPU/cvt-pk-fp8-dead-old-gfx1250.ll",
+      "line": 2,
+      "author": "arsenm"
+    },
+    {
+      "html_url": "https://github.com/llvm/llvm-project/pull/231556#discussion_r4261670002",
+      "body": "Not sure why this test is split into 2 files?",
+      "commit_id": "c1c659a557c0cbdb97cca8e5b00d17011a2b8d9e",
+      "path": "llvm/test/CodeGen/AMDGPU/cvt-pk-fp8-dead-old.ll",
+      "line": 1,
+      "author": "arsenm"
+    },
+    {
+      "html_url": "https://github.com/llvm/llvm-project/pull/231556#discussion_r4261674382",
+      "body": "Dst.getSubReg cannot happen in an SSA pass ",
+      "commit_id": "c1c659a557c0cbdb97cca8e5b00d17011a2b8d9e",
+      "path": "llvm/lib/Target/AMDGPU/SIFoldOperands.cpp",
+      "line": 3196,
+      "author": "arsenm"
+    },
+    {
+      "html_url": "https://github.com/llvm/llvm-project/pull/231556#discussion_r4261687204",
+      "body": "This seems like it's too narrowly targeted on this one use, this is a general observed half of register property? ",
+      "commit_id": "c1c659a557c0cbdb97cca8e5b00d17011a2b8d9e",
+      "path": "llvm/lib/Target/AMDGPU/SIFoldOperands.cpp",
+      "line": 3211,
+      "author": "arsenm"
+    },
+    {
+      "html_url": "https://github.com/llvm/llvm-project/pull/231556#discussion_r4261689145",
+      "body": "Lambda is too small, just inline it? ",
+      "commit_id": "c1c659a557c0cbdb97cca8e5b00d17011a2b8d9e",
+      "path": "llvm/lib/Target/AMDGPU/SIFoldOperands.cpp",
+      "line": 3199,
+      "author": "arsenm"
+    },
+    {
+      "html_url": "https://github.com/llvm/llvm-project/pull/231556#discussion_r4261691748",
+      "body": "Use user iterator?",
+      "commit_id": "c1c659a557c0cbdb97cca8e5b00d17011a2b8d9e",
+      "path": "llvm/lib/Target/AMDGPU/SIFoldOperands.cpp",
+      "line": 3210,
+      "author": "arsenm"
+    },
+    {
+      "html_url": "https://github.com/llvm/llvm-project/pull/231556#discussion_r4261698992",
+      "body": "... Why are we bailing on undef? Wouldn't it be the case that if old were undef, you could replace it with anything you liked?",
+      "commit_id": "c1c659a557c0cbdb97cca8e5b00d17011a2b8d9e",
+      "path": "llvm/lib/Target/AMDGPU/SIFoldOperands.cpp",
+      "line": 3196,
+      "author": "krzysz00"
+    },
+    {
+      "html_url": "https://github.com/llvm/llvm-project/pull/231556#discussion_r4261717057",
+      "body": "I think this generalizes to the instructions that pack 1 of 4 bytes, no?\n\nAnd the part of me that doesn't know this code super-well wonders if this comes down to a demanded bits analysis or something",
+      "commit_id": "c1c659a557c0cbdb97cca8e5b00d17011a2b8d9e",
+      "path": "llvm/lib/Target/AMDGPU/SIFoldOperands.cpp",
+      "line": 3224,
+      "author": "krzysz00"
+    }
+  ]
+}
