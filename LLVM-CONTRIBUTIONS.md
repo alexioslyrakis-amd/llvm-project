@@ -173,12 +173,23 @@ source and the integration patch are not copied into this public LLVM fork.
 
 ## Restore after reformatting
 
+The original `dev-platform/tmp/` directory is ignored by Git and will be lost
+when the laptop is formatted. The LLVM checkouts inside it are separate Git
+repositories: the pushed branches and this notes branch are recoverable from
+GitHub independently of the parent workspace. Old absolute paths in archived
+logs are historical references. Only the log excerpts and source patches
+committed under `archive/` are preserved; rebuild the tools and recreate the
+working directories after restoring.
+
+Run these commands from a freshly restored `dev-platform` checkout. They
+recreate the paths used by the container build commands below:
+
 ```sh
-git clone git@github.com:alexioslyrakis-amd/llvm-project.git
-cd llvm-project
-git remote add upstream https://github.com/llvm/llvm-project.git
-git show origin/alyr/llvm-contribution-notes:LLVM-CONTRIBUTIONS.md
-git switch --track origin/alyr/remat-invariant-lds-loads
+mkdir -p tmp
+git clone git@github.com:alexioslyrakis-amd/llvm-project.git tmp/llvm-upstream
+git -C tmp/llvm-upstream remote add upstream https://github.com/llvm/llvm-project.git
+git -C tmp/llvm-upstream show origin/alyr/llvm-contribution-notes:LLVM-CONTRIBUTIONS.md
+git -C tmp/llvm-upstream switch --track origin/alyr/remat-invariant-lds-loads
 ```
 
 Replace the final branch with the contribution being resumed. The three
