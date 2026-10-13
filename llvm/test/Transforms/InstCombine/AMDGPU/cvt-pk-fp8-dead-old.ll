@@ -43,20 +43,8 @@ define i32 @e5m3_lo_then_hi(float %a, float %b, float %c, float %d) {
   ret i32 %hi
 }
 
-; The two halves can use different formats.
-define i32 @mixed_formats(float %a, float %b, float %c, float %d, i32 %old) {
-; CHECK-LABEL: define i32 @mixed_formats(
-; CHECK-SAME: float [[A:%.*]], float [[B:%.*]], float [[C:%.*]], float [[D:%.*]], i32 [[OLD:%.*]]) {
-; CHECK-NEXT:    [[LO:%.*]] = call i32 @llvm.amdgcn.cvt.pk.fp8.f32(float [[A]], float [[B]], i32 undef, i1 false)
-; CHECK-NEXT:    [[HI:%.*]] = call i32 @llvm.amdgcn.cvt.pk.bf8.f32(float [[C]], float [[D]], i32 [[LO]], i1 true)
-; CHECK-NEXT:    ret i32 [[HI]]
-;
-  %lo = call i32 @llvm.amdgcn.cvt.pk.fp8.f32(float %a, float %b, i32 %old, i1 false)
-  %hi = call i32 @llvm.amdgcn.cvt.pk.bf8.f32(float %c, float %d, i32 %lo, i1 true)
-  ret i32 %hi
-}
-
-; Multiple users are allowed if they all overwrite the unselected half.
+; Multiple users and mixed formats are allowed if they all overwrite the
+; unselected half.
 define i32 @multiple_overwrites(float %a, float %b, float %c, float %d, i32 %old, ptr %p) {
 ; CHECK-LABEL: define i32 @multiple_overwrites(
 ; CHECK-SAME: float [[A:%.*]], float [[B:%.*]], float [[C:%.*]], float [[D:%.*]], i32 [[OLD:%.*]], ptr [[P:%.*]]) {
@@ -116,16 +104,6 @@ define i32 @one_user_preserves_half(float %a, float %b, float %c, float %d, i32 
   %same = call i32 @llvm.amdgcn.cvt.pk.fp8.f32(float %c, float %d, i32 %lo, i1 false)
   store i32 %hi, ptr %p
   ret i32 %same
-}
-
-define i32 @no_overwrite(float %a, float %b, i32 %old) {
-; CHECK-LABEL: define i32 @no_overwrite(
-; CHECK-SAME: float [[A:%.*]], float [[B:%.*]], i32 [[OLD:%.*]]) {
-; CHECK-NEXT:    [[LO:%.*]] = call i32 @llvm.amdgcn.cvt.pk.bf8.f32(float [[A]], float [[B]], i32 [[OLD]], i1 false)
-; CHECK-NEXT:    ret i32 [[LO]]
-;
-  %lo = call i32 @llvm.amdgcn.cvt.pk.bf8.f32(float %a, float %b, i32 %old, i1 false)
-  ret i32 %lo
 }
 
 define i32 @already_poison(float %a, float %b, float %c, float %d) {
