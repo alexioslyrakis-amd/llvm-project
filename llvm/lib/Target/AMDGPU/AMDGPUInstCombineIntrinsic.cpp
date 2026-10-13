@@ -1195,6 +1195,8 @@ GCNTTIImpl::instCombineIntrinsic(InstCombiner &IC, IntrinsicInst &II) const {
       return std::nullopt;
 
     bool WordSel = cast<ConstantInt>(II.getArgOperand(3))->isOne();
+    // Only handle packed conversion users here. Truncations or masks may also
+    // discard the preserved half, but need separate analysis.
     for (const Use &U : II.uses()) {
       auto *User = dyn_cast<IntrinsicInst>(U.getUser());
       if (!User || U.getOperandNo() != 2)
