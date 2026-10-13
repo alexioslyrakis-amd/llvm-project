@@ -540,6 +540,13 @@ public:
   /// \return ValueUniformity.
   LLVM_ABI ValueUniformity getValueUniformity(const Value *V) const;
 
+  /// \return true if \p I is a point that code motion must not move other
+  /// instructions across (e.g. a target scheduling barrier that the program
+  /// placed to keep a hand-tuned instruction order). Passes that sink or
+  /// hoist instructions between blocks should not carry an instruction past
+  /// such a point.
+  LLVM_ABI bool isCodeMotionBarrier(const Instruction &I) const;
+
   /// Query the target whether the specified address space cast from FromAS to
   /// ToAS is valid.
   LLVM_ABI bool isValidAddrSpaceCast(unsigned FromAS, unsigned ToAS) const;

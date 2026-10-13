@@ -136,6 +136,8 @@ public:
     return ValueUniformity::Default;
   }
 
+  virtual bool isCodeMotionBarrier(const Instruction &I) const { return false; }
+
   virtual bool isValidAddrSpaceCast(unsigned FromAS, unsigned ToAS) const {
     return false;
   }

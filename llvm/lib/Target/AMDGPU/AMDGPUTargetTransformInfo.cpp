@@ -1832,6 +1832,30 @@ unsigned GCNTTIImpl::getNumberOfParts(Type *Tp) const {
   return BaseT::getNumberOfParts(Tp);
 }
 
+// Off by default: pinning work to one side of a fenced s_barrier can lengthen
+// live ranges and cause spills (measured on an fp8 FMHA kernel: the row-sum
+// placement gained less than a new Q-fragment spill cost). Enable per build to
+// make sched_barrier(0) also block cross-block code motion (IR Sink and
+// MachineSink), not just machine scheduling.
+cl::opt<bool> llvm::AMDGPUSchedBarrierBlocksCodeMotion(
+    "amdgpu-sched-barrier-blocks-code-motion",
+    cl::desc("sched_barrier(0) also blocks cross-block code motion (IR Sink, "
+             "MachineSink), not only machine scheduling"),
+    cl::init(false), cl::Hidden);
+
+bool GCNTTIImpl::isCodeMotionBarrier(const Instruction &I) const {
+  if (!AMDGPUSchedBarrierBlocksCodeMotion)
+    return false;
+  // sched_barrier with mask 0 means no instruction may be scheduled across
+  // it. Honor that for cross-block code motion too, so a program can pin work
+  // to one side of an s_barrier (e.g. ping-pong wave-group schedules).
+  if (const auto *II = dyn_cast<IntrinsicInst>(&I))
+    if (II->getIntrinsicID() == Intrinsic::amdgcn_sched_barrier)
+      if (const auto *Mask = dyn_cast<ConstantInt>(II->getArgOperand(0)))
+        return Mask->isZero();
+  return false;
+}
+
 ValueUniformity GCNTTIImpl::getValueUniformity(const Value *V) const {
   if (const IntrinsicInst *Intrinsic = dyn_cast<IntrinsicInst>(V)) {
     switch (Intrinsic->getIntrinsicID()) {

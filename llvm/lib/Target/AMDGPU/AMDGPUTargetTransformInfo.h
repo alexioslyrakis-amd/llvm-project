@@ -20,6 +20,7 @@
 #include "AMDGPU.h"
 #include "llvm/CodeGen/BasicTTIImpl.h"
 #include "llvm/Support/AMDGPUAddrSpace.h"
+#include "llvm/Support/CommandLine.h"
 #include <optional>
 
 namespace llvm {
@@ -28,6 +29,9 @@ class AMDGPUTargetMachine;
 class GCNSubtarget;
 class InstCombiner;
 class Loop;
+
+/// See -amdgpu-sched-barrier-blocks-code-motion.
+extern cl::opt<bool> AMDGPUSchedBarrierBlocksCodeMotion;
 class ScalarEvolution;
 class SITargetLowering;
 class Type;
@@ -324,6 +328,10 @@ public:
   unsigned getNumberOfParts(Type *Tp) const override;
 
   ValueUniformity getValueUniformity(const Value *V) const override;
+
+  /// llvm.amdgcn.sched.barrier(0) ("nothing may be scheduled across this
+  /// point") also fences cross-block code motion such as IR sinking.
+  bool isCodeMotionBarrier(const Instruction &I) const override;
 
   InstructionCost getScalingFactorCost(Type *Ty, GlobalValue *BaseGV,
                                        StackOffset BaseOffset, bool HasBaseReg,

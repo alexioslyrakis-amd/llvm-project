@@ -64,6 +64,11 @@ static cl::opt<bool> Fix16BitCopies(
   cl::init(true),
   cl::ReallyHidden);
 
+namespace llvm {
+// Defined in AMDGPUTargetTransformInfo.cpp.
+extern cl::opt<bool> AMDGPUSchedBarrierBlocksCodeMotion;
+} // namespace llvm
+
 SIInstrInfo::SIInstrInfo(const GCNSubtarget &ST)
     : AMDGPUGenInstrInfo(ST, RI, AMDGPU::ADJCALLSTACKUP,
                          AMDGPU::ADJCALLSTACKDOWN),
@@ -219,6 +224,17 @@ bool SIInstrInfo::isSafeToSink(MachineInstr &MI,
   // Allow sinking if MI edits lane mask (divergent i1 in sgpr).
   if (MI.getOpcode() == AMDGPU::SI_IF_BREAK)
     return true;
+
+  // SCHED_BARRIER 0 means nothing may be moved across it. Sinking MI out of
+  // its block moves it past every instruction that follows it there.
+  // (Opt-in, see -amdgpu-sched-barrier-blocks-code-motion.)
+  if (AMDGPUSchedBarrierBlocksCodeMotion)
+    for (const MachineInstr &Next :
+         make_range(std::next(MachineBasicBlock::iterator(MI)),
+                    MI.getParent()->end()))
+      if (Next.getOpcode() == AMDGPU::SCHED_BARRIER &&
+          Next.getOperand(0).getImm() == 0)
+        return false;
 
   MachineRegisterInfo &MRI = MI.getMF()->getRegInfo();
   // Check if sinking of MI would create temporal divergent use.

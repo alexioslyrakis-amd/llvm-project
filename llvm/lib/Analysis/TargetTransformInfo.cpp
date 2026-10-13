@@ -302,6 +302,11 @@ llvm::TargetTransformInfo::getValueUniformity(const Value *V) const {
   return VU;
 }
 
+bool llvm::TargetTransformInfo::isCodeMotionBarrier(
+    const Instruction &I) const {
+  return TTIImpl->isCodeMotionBarrier(I);
+}
+
 bool llvm::TargetTransformInfo::isValidAddrSpaceCast(unsigned FromAS,
                                                      unsigned ToAS) const {
   return TTIImpl->isValidAddrSpaceCast(FromAS, ToAS);
