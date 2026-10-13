@@ -1185,7 +1185,7 @@ GCNTTIImpl::instCombineIntrinsic(InstCombiner &IC, IntrinsicInst &II) const {
     // Each conversion writes one 16-bit half and preserves the other from old.
     // If every user overwrites the preserved half, the initial old is dead.
     Value *Old = II.getArgOperand(2);
-    if (isa<UndefValue>(Old) || II.use_empty())
+    if (isa<UndefValue>(Old))
       return std::nullopt;
 
     // Attributes can constrain otherwise-unused bits of the intermediate value.
