@@ -341,7 +341,61 @@ bool AMDGPUDAGToDAGISel::matchLoadD16FromBuildVector(SDNode *N) const {
   return false;
 }
 
+// Describe the old-destination and half-selection operands before selection.
+static bool getPackedF8Operands(const SDNode *N, unsigned &OldIdx) {
+  switch (N->getOpcode()) {
+  case AMDGPUISD::CVT_PK_FP8_F32:
+  case AMDGPUISD::CVT_PK_BF8_F32:
+  case AMDGPUISD::CVT_PK_FP8_F32_E5M3:
+    OldIdx = 2;
+    return true;
+  case ISD::INTRINSIC_WO_CHAIN:
+    switch (N->getConstantOperandVal(0)) {
+    case Intrinsic::amdgcn_cvt_pk_fp8_f32:
+    case Intrinsic::amdgcn_cvt_pk_bf8_f32:
+    case Intrinsic::amdgcn_cvt_pk_fp8_f32_e5m3:
+      OldIdx = 3;
+      return true;
+    default:
+      return false;
+    }
+  default:
+    return false;
+  }
+}
+
 void AMDGPUDAGToDAGISel::PreprocessISelDAG() {
+  // All users must discard the half inherited from old. Analyze before
+  // selecting any users, so shared results remain shared.
+  SmallVector<SDNode *, 8> DeadOld;
+  for (SDNode &N : CurDAG->allnodes()) {
+    unsigned OldIdx;
+    if (!getPackedF8Operands(&N, OldIdx) || N.use_empty() ||
+        N.getOperand(OldIdx).isUndef())
+      continue;
+    bool High = N.getConstantOperandVal(OldIdx + 1) != 0;
+    bool Safe = true;
+    for (const SDUse &Use : N.uses()) {
+      unsigned UserOldIdx;
+      const SDNode *User = Use.getUser();
+      if (!getPackedF8Operands(User, UserOldIdx) ||
+          Use.getOperandNo() != UserOldIdx ||
+          (User->getConstantOperandVal(UserOldIdx + 1) != 0) == High) {
+        Safe = false;
+        break;
+      }
+    }
+    if (Safe)
+      DeadOld.push_back(&N);
+  }
+  for (SDNode *N : DeadOld) {
+    unsigned OldIdx;
+    getPackedF8Operands(N, OldIdx);
+    SmallVector<SDValue, 5> Ops(N->op_values());
+    Ops[OldIdx] = CurDAG->getUNDEF(MVT::i32);
+    CurDAG->UpdateNodeOperands(N, Ops);
+  }
+
   if (!Subtarget->d16PreservesUnusedBits())
     return;
 

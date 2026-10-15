@@ -53,6 +53,19 @@ AMDGPUInstructionSelector::AMDGPUInstructionSelector(
 
 const char *AMDGPUInstructionSelector::getName() { return DEBUG_TYPE; }
 
+static bool isPackedF8Intrinsic(const MachineInstr &MI) {
+  if (MI.getOpcode() != TargetOpcode::G_INTRINSIC)
+    return false;
+  switch (cast<GIntrinsic>(MI).getIntrinsicID()) {
+  case Intrinsic::amdgcn_cvt_pk_fp8_f32:
+  case Intrinsic::amdgcn_cvt_pk_bf8_f32:
+  case Intrinsic::amdgcn_cvt_pk_fp8_f32_e5m3:
+    return true;
+  default:
+    return false;
+  }
+}
+
 void AMDGPUInstructionSelector::setupMF(MachineFunction &MF,
                                         GISelValueTracking *VT,
                                         CodeGenCoverage *CoverageInfo,
@@ -62,6 +75,35 @@ void AMDGPUInstructionSelector::setupMF(MachineFunction &MF,
   Subtarget = &MF.getSubtarget<GCNSubtarget>();
   Subtarget->checkSubtargetFeatures(MF.getFunction());
   InstructionSelector::setupMF(MF, VT, CoverageInfo, PSI, BFI);
+  // Inspect generic users before reverse-order selection changes their shape.
+  for (MachineBasicBlock &MBB : MF) {
+    for (MachineInstr &MI : make_early_inc_range(MBB)) {
+      if (!isPackedF8Intrinsic(MI))
+        continue;
+      Register Dst = MI.getOperand(0).getReg();
+      bool High = MI.getOperand(5).getImm() != 0;
+      bool Safe = !MRI->use_nodbg_empty(Dst);
+      for (const MachineOperand &Use : MRI->use_nodbg_operands(Dst)) {
+        if (Use.isUndef())
+          continue;
+        const MachineInstr &User = *Use.getParent();
+        if (!isPackedF8Intrinsic(User) || &Use != &User.getOperand(4) ||
+            (User.getOperand(5).getImm() != 0) == High ||
+            execMayBeModifiedBeforeUse(*MRI, Dst, MI, User)) {
+          Safe = false;
+          break;
+        }
+      }
+      if (!Safe)
+        continue;
+      Register Undef = MRI->createGenericVirtualRegister(LLT::scalar(32));
+      MRI->setRegBank(Undef, RBI.getRegBank(AMDGPU::VGPRRegBankID));
+      BuildMI(MBB, MI, MI.getDebugLoc(), TII.get(TargetOpcode::G_IMPLICIT_DEF))
+          .addDef(Undef);
+      MI.getOperand(4).setReg(Undef);
+      MI.getOperand(4).setIsKill(false);
+    }
+  }
 }
 
 // Return the wave level SGPR base address if this is a wave address.

@@ -6,15 +6,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-class Cvt_PK_F8_F32_OneUse<SDPatternOperator Op> : PatFrag<
-    (ops node:$src0, node:$src1, node:$old, node:$sel),
-    (Op $src0, $src1, $old, $sel)> {
-  let HasOneUse = 1;
-}
-
-def cvt_pk_fp8_f32_oneuse : Cvt_PK_F8_F32_OneUse<cvt_pk_fp8_f32>;
-def cvt_pk_bf8_f32_oneuse : Cvt_PK_F8_F32_OneUse<cvt_pk_bf8_f32>;
-
 def BITOP3_32 : ComplexPattern<i32, 4, "SelectBITOP3", [and, or, xor]>;
 def BITOP3_16 : ComplexPattern<i16, 4, "SelectBITOP3", [and, or, xor]>;
 
@@ -859,19 +850,6 @@ class Cvt_PK_F8_F32_E5M3_Pat<SDPatternOperator node, int index, VOP3_Pseudo inst
     (inst !if(index, SRCMODS.DST_OP_SEL, 0), $src0, 0, $src1, Clamp, $old, 0)
 >;
 
-// A pair of conversions filling opposite halves does not need the initial
-// destination value. Keep the intermediate tied input to pack into one VGPR.
-class Cvt_PK_F8_F32_Pair_Pat<SDPatternOperator first, SDPatternOperator second,
-                            int index, VOP3_Pseudo firstInst,
-                            VOP3_Pseudo secondInst> : GCNPat<
-    (i32 (second f32:$src2, f32:$src3,
-      (i32 (first f32:$src0, f32:$src1, srcvalue, index)),
-      !if(index, 0, -1))),
-    (secondInst !if(index, 0, SRCMODS.DST_OP_SEL), $src2, 0, $src3,
-      (i32 (firstInst !if(index, SRCMODS.DST_OP_SEL, 0), $src0, 0, $src1,
-                     (i32 (IMPLICIT_DEF)), 0)), 0)
->;
-
 multiclass Cvt_PK_F8_F32_t16_Pat<SDPatternOperator node, VOP3_Pseudo inst> {
 def : GCNPat<
     (i32 (node f32:$src0, f32:$src1, i32:$old, -1)),
@@ -924,20 +902,6 @@ class Cvt_SR_F8_ByteSel_E5M3_Pat<SDPatternOperator node, VOP3_Pseudo inst,
           i32:$old, timm:$byte_sel)),
     (inst $src0_modifiers, $src0, $src1_modifiers, $src1, Clamp, $old, (as_i32timm $byte_sel))
 >;
-
-let OtherPredicates = [HasFP8ConversionInsts, NotHasFP8E5M3Insts],
-    True16Predicate = NotHasTrue16BitInsts in {
-foreach Index = [0, -1] in {
-  def : Cvt_PK_F8_F32_Pair_Pat<cvt_pk_fp8_f32_oneuse, cvt_pk_fp8_f32, Index,
-                              V_CVT_PK_FP8_F32_e64, V_CVT_PK_FP8_F32_e64>;
-  def : Cvt_PK_F8_F32_Pair_Pat<cvt_pk_fp8_f32_oneuse, cvt_pk_bf8_f32, Index,
-                              V_CVT_PK_FP8_F32_e64, V_CVT_PK_BF8_F32_e64>;
-  def : Cvt_PK_F8_F32_Pair_Pat<cvt_pk_bf8_f32_oneuse, cvt_pk_fp8_f32, Index,
-                              V_CVT_PK_BF8_F32_e64, V_CVT_PK_FP8_F32_e64>;
-  def : Cvt_PK_F8_F32_Pair_Pat<cvt_pk_bf8_f32_oneuse, cvt_pk_bf8_f32, Index,
-                              V_CVT_PK_BF8_F32_e64, V_CVT_PK_BF8_F32_e64>;
-}
-}
 
 let OtherPredicates = [HasFP8ConversionInsts] in {
 foreach Index = [0, -1] in {
