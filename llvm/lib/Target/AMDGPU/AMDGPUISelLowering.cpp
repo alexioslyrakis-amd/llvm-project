@@ -4346,8 +4346,8 @@ static APInt getPackedF8PreservedBits(const SDNode *N,
 
 static APInt getPackedF8UserDemandedBits(const SDUse &Use) {
   const SDNode *User = Use.getUser();
-  if (std::optional<PackedF8Operands> Operands = getPackedF8Operands(User);
-      Operands && Use.getOperandNo() == Operands->OldIdx)
+  std::optional<PackedF8Operands> Operands = getPackedF8Operands(User);
+  if (Operands && Use.getOperandNo() == Operands->OldIdx)
     return getPackedF8PreservedBits(User, *Operands);
 
   if (User->getOpcode() == ISD::TRUNCATE)
