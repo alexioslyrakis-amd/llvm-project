@@ -4346,17 +4346,21 @@ static APInt getPackedF8PreservedBits(const SDNode *N,
 
 static APInt getPackedF8UserDemandedBits(const SDUse &Use) {
   const SDNode *User = Use.getUser();
+
   std::optional<PackedF8Operands> Operands = getPackedF8Operands(User);
   if (Operands && Use.getOperandNo() == Operands->OldIdx)
     return getPackedF8PreservedBits(User, *Operands);
 
-  if (User->getOpcode() == ISD::TRUNCATE)
+  switch (User->getOpcode()) {
+  case ISD::TRUNCATE:
     return APInt::getLowBitsSet(32, User->getValueType(0).getSizeInBits());
-
-  if (User->getOpcode() == ISD::AND) {
+  case ISD::AND:
     if (auto *Mask =
             dyn_cast<ConstantSDNode>(User->getOperand(1 - Use.getOperandNo())))
       return Mask->getAPIntValue();
+    break;
+  default:
+    break;
   }
 
   return APInt::getAllOnes(32);
