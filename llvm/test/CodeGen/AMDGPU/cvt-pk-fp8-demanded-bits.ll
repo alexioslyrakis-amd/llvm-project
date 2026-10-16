@@ -89,12 +89,15 @@ define i32 @variable_mask(float %a, float %b, i32 %mask) {
  ret i32 %y
 }
 
-; Inline assembly changing EXEC prevents inferring lane equivalence.
-; CHECK-LABEL: exec_change:
-; CHECK: v_mov_b{{(16|32)}}{{.*}}, {{(7|0x70000|458752)}}
-define i32 @exec_change(float %a, float %b, float %c, float %d) {
+; A user in another block still discards the preserved half.
+; CHECK-LABEL: cross_block:
+; CHECK-NOT: v_mov_b{{(16|32)}}{{.*}}, {{(7|0x70000|458752)}}
+; CHECK: v_cvt_pk_fp8_f32
+define i32 @cross_block(float %a, float %b, float %c, float %d) {
+entry:
  %x = call i32 @llvm.amdgcn.cvt.pk.fp8.f32(float %a, float %b, i32 458752, i1 false)
- call void asm sideeffect "s_mov_b64 exec, 1", "~{exec},~{memory}"()
+ br label %next
+next:
  %y = call i32 @llvm.amdgcn.cvt.pk.fp8.f32(float %c, float %d, i32 %x, i1 true)
  ret i32 %y
 }

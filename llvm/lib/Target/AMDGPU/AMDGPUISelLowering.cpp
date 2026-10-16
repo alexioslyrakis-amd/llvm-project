@@ -4288,21 +4288,90 @@ SDValue AMDGPUTargetLowering::performAssertSZExtCombine(SDNode *N,
   return SDValue();
 }
 
+static std::optional<unsigned> getPackedF8OldOperand(const SDNode *N) {
+  switch (N->getOpcode()) {
+  case AMDGPUISD::CVT_PK_FP8_F32:
+  case AMDGPUISD::CVT_PK_BF8_F32:
+  case AMDGPUISD::CVT_PK_FP8_F32_E5M3:
+    return 2;
+  case ISD::INTRINSIC_WO_CHAIN:
+    switch (N->getConstantOperandVal(0)) {
+    case Intrinsic::amdgcn_cvt_pk_fp8_f32:
+    case Intrinsic::amdgcn_cvt_pk_bf8_f32:
+    case Intrinsic::amdgcn_cvt_pk_fp8_f32_e5m3:
+      return 3;
+    default:
+      return std::nullopt;
+    }
+  default:
+    return std::nullopt;
+  }
+}
+
+// The word selector chooses the half written by the conversion. The other half
+// is copied from the old destination operand.
+static APInt getPackedF8PreservedBits(const SDNode *N, unsigned OldIdx) {
+  return N->getConstantOperandVal(OldIdx + 1) ? APInt::getLowBitsSet(32, 16)
+                                              : APInt::getHighBitsSet(32, 16);
+}
+
+static APInt getPackedF8ResultDemandedBits(const SDUse &Use) {
+  const SDNode *User = Use.getUser();
+  if (std::optional<unsigned> OldIdx = getPackedF8OldOperand(User);
+      OldIdx && Use.getOperandNo() == *OldIdx)
+    return getPackedF8PreservedBits(User, *OldIdx);
+
+  if (User->getOpcode() == ISD::TRUNCATE)
+    return APInt::getLowBitsSet(32, User->getValueType(0).getSizeInBits());
+
+  if (User->getOpcode() == ISD::AND) {
+    if (auto *Mask =
+            dyn_cast<ConstantSDNode>(User->getOperand(1 - Use.getOperandNo())))
+      return Mask->getAPIntValue();
+  }
+
+  return APInt::getAllOnes(32);
+}
+
+static SDValue
+performPackedF8ConversionCombine(SDNode *N,
+                                 TargetLowering::DAGCombinerInfo &DCI) {
+  unsigned OldIdx = *getPackedF8OldOperand(N);
+  SDValue Old = N->getOperand(OldIdx);
+  APInt Preserved = getPackedF8PreservedBits(N, OldIdx);
+
+  // SimplifyDemandedBits handles single uses. A shared result needs every user
+  // to discard the preserved half before its old operand can be dropped.
+  if (!Old.isUndef() && !N->hasOneUse()) {
+    APInt Demanded(32, 0);
+    for (const SDUse &Use : N->uses()) {
+      Demanded |= getPackedF8ResultDemandedBits(Use);
+      if (Demanded.intersects(Preserved))
+        break;
+    }
+
+    if (!Demanded.intersects(Preserved)) {
+      SmallVector<SDValue, 5> Ops(N->op_values());
+      Ops[OldIdx] = DCI.DAG.getUNDEF(MVT::i32);
+      return DCI.DAG.getNode(N->getOpcode(), SDLoc(N), MVT::i32, Ops,
+                             N->getFlags());
+    }
+  }
+
+  const TargetLowering &TLI = DCI.DAG.getTargetLoweringInfo();
+  if (TLI.SimplifyDemandedBits(Old, Preserved, DCI))
+    return SDValue(N, 0);
+  return SDValue();
+}
+
 SDValue AMDGPUTargetLowering::performIntrinsicWOChainCombine(
   SDNode *N, DAGCombinerInfo &DCI) const {
   unsigned IID = N->getConstantOperandVal(0);
   switch (IID) {
   case Intrinsic::amdgcn_cvt_pk_fp8_f32:
   case Intrinsic::amdgcn_cvt_pk_bf8_f32:
-  case Intrinsic::amdgcn_cvt_pk_fp8_f32_e5m3: {
-    // A conversion only observes the opposite half of its old destination.
-    APInt Preserved = N->getConstantOperandVal(4)
-                          ? APInt::getLowBitsSet(32, 16)
-                          : APInt::getHighBitsSet(32, 16);
-    if (SimplifyDemandedBits(N->getOperand(3), Preserved, DCI))
-      return SDValue(N, 0);
-    return SDValue();
-  }
+  case Intrinsic::amdgcn_cvt_pk_fp8_f32_e5m3:
+    return performPackedF8ConversionCombine(N, DCI);
   case Intrinsic::amdgcn_mul_i24:
   case Intrinsic::amdgcn_mul_u24:
   case Intrinsic::amdgcn_mulhi_i24:
@@ -5834,6 +5903,10 @@ SDValue AMDGPUTargetLowering::PerformDAGCombine(SDNode *N,
     return performLoadCombine(N, DCI);
   case ISD::STORE:
     return performStoreCombine(N, DCI);
+  case AMDGPUISD::CVT_PK_FP8_F32:
+  case AMDGPUISD::CVT_PK_BF8_F32:
+  case AMDGPUISD::CVT_PK_FP8_F32_E5M3:
+    return performPackedF8ConversionCombine(N, DCI);
   case AMDGPUISD::RCP:
   case AMDGPUISD::RCP_IFLAG:
     return performRcpCombine(N, DCI);
@@ -5880,84 +5953,23 @@ bool AMDGPUTargetLowering::SimplifyDemandedBitsForTargetNode(
     SDValue Op, const APInt &OriginalDemandedBits,
     const APInt &OriginalDemandedElts, KnownBits &Known, TargetLoweringOpt &TLO,
     unsigned Depth) const {
-  unsigned OldIdx = 0;
-  if (Op.getOpcode() == ISD::INTRINSIC_WO_CHAIN) {
-    switch (Op.getConstantOperandVal(0)) {
-    case Intrinsic::amdgcn_cvt_pk_fp8_f32:
-    case Intrinsic::amdgcn_cvt_pk_bf8_f32:
-    case Intrinsic::amdgcn_cvt_pk_fp8_f32_e5m3:
-      OldIdx = 3;
-      break;
-    default:
-      break;
-    }
-  } else if (Op.getOpcode() == AMDGPUISD::CVT_PK_FP8_F32 ||
-             Op.getOpcode() == AMDGPUISD::CVT_PK_BF8_F32 ||
-             Op.getOpcode() == AMDGPUISD::CVT_PK_FP8_F32_E5M3) {
-    OldIdx = 2;
-  }
-  if (OldIdx) {
-    // Inline assembly can modify EXEC in ways the value DAG does not express.
-    // Keep the dependency in such blocks rather than infer lane equivalence.
-    for (const SDNode &N : TLO.DAG.allnodes())
-      if (N.getOpcode() == ISD::INLINEASM || N.getOpcode() == ISD::INLINEASM_BR)
-        return false;
-    APInt Preserved = Op.getConstantOperandVal(OldIdx + 1)
-                          ? APInt::getLowBitsSet(32, 16)
-                          : APInt::getHighBitsSet(32, 16);
-    APInt Demanded = OriginalDemandedBits;
-    if (!Op.hasOneUse()) {
-      // The generic simplifier demands all bits for shared values. Union the
-      // requirements of direct users; unknown uses conservatively demand all.
-      Demanded = APInt(32, 0);
-      unsigned NumUses = 0;
-      for (const SDUse &Use : Op->uses()) {
-        if (++NumUses > 32) {
-          Demanded = APInt::getAllOnes(32);
-          break;
-        }
-        const SDNode *User = Use.getUser();
-        APInt UserDemanded = APInt::getAllOnes(32);
-        if (User->getOpcode() == ISD::TRUNCATE &&
-            User->getValueType(0).getSizeInBits() < 32) {
-          UserDemanded =
-              APInt::getLowBitsSet(32, User->getValueType(0).getSizeInBits());
-        } else if (User->getOpcode() == ISD::AND) {
-          if (auto *Mask = dyn_cast<ConstantSDNode>(
-                  User->getOperand(1 - Use.getOperandNo())))
-            UserDemanded = Mask->getAPIntValue();
-        } else if (User->getOpcode() == ISD::INTRINSIC_WO_CHAIN &&
-                   Use.getOperandNo() == 3) {
-          switch (User->getConstantOperandVal(0)) {
-          case Intrinsic::amdgcn_cvt_pk_fp8_f32:
-          case Intrinsic::amdgcn_cvt_pk_bf8_f32:
-          case Intrinsic::amdgcn_cvt_pk_fp8_f32_e5m3:
-            UserDemanded = User->getConstantOperandVal(4)
-                               ? APInt::getLowBitsSet(32, 16)
-                               : APInt::getHighBitsSet(32, 16);
-            break;
-          default:
-            break;
-          }
-        }
-        Demanded |= UserDemanded;
-        if (Demanded.isAllOnes())
-          break;
-      }
-    }
-    APInt NeededOld = Demanded & Preserved;
-    if (NeededOld.isZero() && !Op.getOperand(OldIdx).isUndef()) {
+  if (std::optional<unsigned> OldIdx = getPackedF8OldOperand(Op.getNode())) {
+    SDValue Old = Op.getOperand(*OldIdx);
+    APInt Preserved = getPackedF8PreservedBits(Op.getNode(), *OldIdx);
+    APInt DemandedOld = OriginalDemandedBits & Preserved;
+    if (DemandedOld.isZero() && !Old.isUndef()) {
       SmallVector<SDValue, 5> Ops(Op->op_values());
-      Ops[OldIdx] = TLO.DAG.getUNDEF(MVT::i32);
+      Ops[*OldIdx] = TLO.DAG.getUNDEF(MVT::i32);
       return TLO.CombineTo(Op, TLO.DAG.getNode(Op.getOpcode(), SDLoc(Op),
                                                MVT::i32, Ops, Op->getFlags()));
     }
-    KnownBits OldKnown(32);
-    if (SimplifyDemandedBits(Op.getOperand(OldIdx), NeededOld,
-                             OriginalDemandedElts, OldKnown, TLO, Depth + 1))
+
+    KnownBits KnownOld(32);
+    if (SimplifyDemandedBits(Old, DemandedOld, OriginalDemandedElts, KnownOld,
+                             TLO, Depth + 1))
       return true;
-    Known.Zero = OldKnown.Zero & Preserved;
-    Known.One = OldKnown.One & Preserved;
+    Known.Zero = KnownOld.Zero & Preserved;
+    Known.One = KnownOld.One & Preserved;
     return false;
   }
 
