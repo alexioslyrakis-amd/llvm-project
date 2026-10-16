@@ -77,6 +77,9 @@ public:
   void applySelectFCmpToFMinFMaxLegacy(MachineInstr &MI,
                                        const FMinFMaxLegacyInfo &Info) const;
 
+  bool matchPackedF8DeadOld(MachineInstr &MI) const;
+  void applyPackedF8DeadOld(MachineInstr &MI) const;
+
   bool matchUCharToFloat(MachineInstr &MI) const;
   void applyUCharToFloat(MachineInstr &MI) const;
 
@@ -271,6 +274,82 @@ void AMDGPUPostLegalizerCombinerImpl::applyFDivSqrtToRsqF16(
                      .getReg(0);
   B.buildFMul(Dst, RSQ, Y, Flags);
   MI.eraseFromParent();
+}
+
+static bool isPackedF8Intrinsic(const MachineInstr &MI) {
+  if (MI.getOpcode() != TargetOpcode::G_INTRINSIC || MI.getNumOperands() != 6 ||
+      !MI.getOperand(1).isIntrinsicID())
+    return false;
+  switch (MI.getOperand(1).getIntrinsicID()) {
+  case Intrinsic::amdgcn_cvt_pk_fp8_f32:
+  case Intrinsic::amdgcn_cvt_pk_bf8_f32:
+  case Intrinsic::amdgcn_cvt_pk_fp8_f32_e5m3:
+    return true;
+  default:
+    return false;
+  }
+}
+
+bool AMDGPUPostLegalizerCombinerImpl::matchPackedF8DeadOld(
+    MachineInstr &MI) const {
+  if (!isPackedF8Intrinsic(MI))
+    return false;
+  Register Old = MI.getOperand(4).getReg();
+  if (MRI.getVRegDef(Old)->getOpcode() == TargetOpcode::G_IMPLICIT_DEF)
+    return false;
+  Register Dst = MI.getOperand(0).getReg();
+  if (MRI.use_nodbg_empty(Dst))
+    return false;
+  uint32_t Preserved = MI.getOperand(5).getImm() ? 0xffff : 0xffff0000;
+  uint32_t Demanded = 0;
+  unsigned NumUses = 0;
+  for (const MachineOperand &Use : MRI.use_nodbg_operands(Dst)) {
+    if (++NumUses > 32)
+      return false;
+    if (Use.isUndef())
+      continue;
+    const MachineInstr &User = *Use.getParent();
+    uint32_t Needed = ~0u;
+    if (User.getParent() != MI.getParent())
+      return false;
+    // Explicit EXEC changes (including inline assembly) invalidate the
+    // assumption that the producer and consumer operate on the same lanes.
+    unsigned NumInsts = 0;
+    auto I = std::next(MI.getIterator());
+    for (; I != MI.getParent()->end() && &*I != &User; ++I) {
+      if (++NumInsts > 32 ||
+          I->modifiesRegister(AMDGPU::EXEC, STI.getRegisterInfo()))
+        return false;
+    }
+    if (I == MI.getParent()->end())
+      return false;
+    if (isPackedF8Intrinsic(User) && &Use == &User.getOperand(4)) {
+      Needed = User.getOperand(5).getImm() ? 0xffff : 0xffff0000;
+    } else if (User.getOpcode() == TargetOpcode::G_TRUNC) {
+      unsigned Bits = MRI.getType(User.getOperand(0).getReg()).getSizeInBits();
+      if (Bits < 32)
+        Needed = maskTrailingOnes<uint32_t>(Bits);
+    } else if (User.getOpcode() == TargetOpcode::G_AND) {
+      unsigned Other = &Use == &User.getOperand(1) ? 2 : 1;
+      if (auto C = getIConstantVRegValWithLookThrough(
+              User.getOperand(Other).getReg(), MRI))
+        Needed = C->Value.getZExtValue();
+    }
+    Demanded |= Needed;
+    if (Demanded & Preserved)
+      return false;
+  }
+  return true;
+}
+
+void AMDGPUPostLegalizerCombinerImpl::applyPackedF8DeadOld(
+    MachineInstr &MI) const {
+  B.setInstrAndDebugLoc(MI);
+  Register Undef = B.buildUndef(LLT::scalar(32)).getReg(0);
+  Observer.changingInstr(MI);
+  MI.getOperand(4).setReg(Undef);
+  MI.getOperand(4).setIsKill(false);
+  Observer.changedInstr(MI);
 }
 
 bool AMDGPUPostLegalizerCombinerImpl::matchCvtF32UByteN(

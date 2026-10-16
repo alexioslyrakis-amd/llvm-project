@@ -4292,6 +4292,17 @@ SDValue AMDGPUTargetLowering::performIntrinsicWOChainCombine(
   SDNode *N, DAGCombinerInfo &DCI) const {
   unsigned IID = N->getConstantOperandVal(0);
   switch (IID) {
+  case Intrinsic::amdgcn_cvt_pk_fp8_f32:
+  case Intrinsic::amdgcn_cvt_pk_bf8_f32:
+  case Intrinsic::amdgcn_cvt_pk_fp8_f32_e5m3: {
+    // A conversion only observes the opposite half of its old destination.
+    APInt Preserved = N->getConstantOperandVal(4)
+                          ? APInt::getLowBitsSet(32, 16)
+                          : APInt::getHighBitsSet(32, 16);
+    if (SimplifyDemandedBits(N->getOperand(3), Preserved, DCI))
+      return SDValue(N, 0);
+    return SDValue();
+  }
   case Intrinsic::amdgcn_mul_i24:
   case Intrinsic::amdgcn_mul_u24:
   case Intrinsic::amdgcn_mulhi_i24:
@@ -5869,6 +5880,87 @@ bool AMDGPUTargetLowering::SimplifyDemandedBitsForTargetNode(
     SDValue Op, const APInt &OriginalDemandedBits,
     const APInt &OriginalDemandedElts, KnownBits &Known, TargetLoweringOpt &TLO,
     unsigned Depth) const {
+  unsigned OldIdx = 0;
+  if (Op.getOpcode() == ISD::INTRINSIC_WO_CHAIN) {
+    switch (Op.getConstantOperandVal(0)) {
+    case Intrinsic::amdgcn_cvt_pk_fp8_f32:
+    case Intrinsic::amdgcn_cvt_pk_bf8_f32:
+    case Intrinsic::amdgcn_cvt_pk_fp8_f32_e5m3:
+      OldIdx = 3;
+      break;
+    default:
+      break;
+    }
+  } else if (Op.getOpcode() == AMDGPUISD::CVT_PK_FP8_F32 ||
+             Op.getOpcode() == AMDGPUISD::CVT_PK_BF8_F32 ||
+             Op.getOpcode() == AMDGPUISD::CVT_PK_FP8_F32_E5M3) {
+    OldIdx = 2;
+  }
+  if (OldIdx) {
+    // Inline assembly can modify EXEC in ways the value DAG does not express.
+    // Keep the dependency in such blocks rather than infer lane equivalence.
+    for (const SDNode &N : TLO.DAG.allnodes())
+      if (N.getOpcode() == ISD::INLINEASM || N.getOpcode() == ISD::INLINEASM_BR)
+        return false;
+    APInt Preserved = Op.getConstantOperandVal(OldIdx + 1)
+                          ? APInt::getLowBitsSet(32, 16)
+                          : APInt::getHighBitsSet(32, 16);
+    APInt Demanded = OriginalDemandedBits;
+    if (!Op.hasOneUse()) {
+      // The generic simplifier demands all bits for shared values. Union the
+      // requirements of direct users; unknown uses conservatively demand all.
+      Demanded = APInt(32, 0);
+      unsigned NumUses = 0;
+      for (const SDUse &Use : Op->uses()) {
+        if (++NumUses > 32) {
+          Demanded = APInt::getAllOnes(32);
+          break;
+        }
+        const SDNode *User = Use.getUser();
+        APInt UserDemanded = APInt::getAllOnes(32);
+        if (User->getOpcode() == ISD::TRUNCATE &&
+            User->getValueType(0).getSizeInBits() < 32) {
+          UserDemanded =
+              APInt::getLowBitsSet(32, User->getValueType(0).getSizeInBits());
+        } else if (User->getOpcode() == ISD::AND) {
+          if (auto *Mask = dyn_cast<ConstantSDNode>(
+                  User->getOperand(1 - Use.getOperandNo())))
+            UserDemanded = Mask->getAPIntValue();
+        } else if (User->getOpcode() == ISD::INTRINSIC_WO_CHAIN &&
+                   Use.getOperandNo() == 3) {
+          switch (User->getConstantOperandVal(0)) {
+          case Intrinsic::amdgcn_cvt_pk_fp8_f32:
+          case Intrinsic::amdgcn_cvt_pk_bf8_f32:
+          case Intrinsic::amdgcn_cvt_pk_fp8_f32_e5m3:
+            UserDemanded = User->getConstantOperandVal(4)
+                               ? APInt::getLowBitsSet(32, 16)
+                               : APInt::getHighBitsSet(32, 16);
+            break;
+          default:
+            break;
+          }
+        }
+        Demanded |= UserDemanded;
+        if (Demanded.isAllOnes())
+          break;
+      }
+    }
+    APInt NeededOld = Demanded & Preserved;
+    if (NeededOld.isZero() && !Op.getOperand(OldIdx).isUndef()) {
+      SmallVector<SDValue, 5> Ops(Op->op_values());
+      Ops[OldIdx] = TLO.DAG.getUNDEF(MVT::i32);
+      return TLO.CombineTo(Op, TLO.DAG.getNode(Op.getOpcode(), SDLoc(Op),
+                                               MVT::i32, Ops, Op->getFlags()));
+    }
+    KnownBits OldKnown(32);
+    if (SimplifyDemandedBits(Op.getOperand(OldIdx), NeededOld,
+                             OriginalDemandedElts, OldKnown, TLO, Depth + 1))
+      return true;
+    Known.Zero = OldKnown.Zero & Preserved;
+    Known.One = OldKnown.One & Preserved;
+    return false;
+  }
+
   switch (Op.getOpcode()) {
   case ISD::INTRINSIC_WO_CHAIN: {
     switch (Op.getConstantOperandVal(0)) {
