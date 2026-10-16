@@ -4288,38 +4288,67 @@ SDValue AMDGPUTargetLowering::performAssertSZExtCombine(SDNode *N,
   return SDValue();
 }
 
-static std::optional<unsigned> getPackedF8OldOperand(const SDNode *N) {
+struct PackedF8Operands {
+  unsigned Old;
+  unsigned Selector;
+};
+
+static bool isPackedF8Node(const SDNode *N, bool &IsIntrinsic) {
+  IsIntrinsic = N->getOpcode() == ISD::INTRINSIC_WO_CHAIN;
+  if (IsIntrinsic) {
+    unsigned IntrinsicID = N->getConstantOperandVal(0);
+    switch (IntrinsicID) {
+    case Intrinsic::amdgcn_cvt_pk_fp8_f32:
+    case Intrinsic::amdgcn_cvt_pk_bf8_f32:
+    case Intrinsic::amdgcn_cvt_pk_fp8_f32_e5m3:
+      return true;
+    default:
+      return false;
+    }
+  }
+
   switch (N->getOpcode()) {
   case AMDGPUISD::CVT_PK_FP8_F32:
   case AMDGPUISD::CVT_PK_BF8_F32:
   case AMDGPUISD::CVT_PK_FP8_F32_E5M3:
-    return 2;
-  case ISD::INTRINSIC_WO_CHAIN:
-    switch (N->getConstantOperandVal(0)) {
-    case Intrinsic::amdgcn_cvt_pk_fp8_f32:
-    case Intrinsic::amdgcn_cvt_pk_bf8_f32:
-    case Intrinsic::amdgcn_cvt_pk_fp8_f32_e5m3:
-      return 3;
-    default:
-      return std::nullopt;
-    }
+    return true;
   default:
-    return std::nullopt;
+    return false;
   }
+}
+
+// Layouts:
+//   intrinsic: intrinsic ID, src0, src1, old, selector
+//   AMDGPUISD: src0, src1, old, selector
+static std::optional<PackedF8Operands> getPackedF8Operands(const SDNode *N) {
+  bool IsIntrinsic;
+  if (!isPackedF8Node(N, IsIntrinsic))
+    return std::nullopt;
+
+  // The intrinsic form has its intrinsic ID before the source operands.
+  unsigned Old = IsIntrinsic ? 3 : 2;
+  PackedF8Operands Operands{Old, Old + 1};
+  assert(N->getNumOperands() == Operands.Selector + 1 &&
+         "unexpected packed FP8 conversion operand layout");
+  assert(isa<ConstantSDNode>(N->getOperand(Operands.Selector)) &&
+         "packed FP8 conversion selector must be constant");
+  return Operands;
 }
 
 // The word selector chooses the half written by the conversion. The other half
 // is copied from the old destination operand.
-static APInt getPackedF8PreservedBits(const SDNode *N, unsigned OldIdx) {
-  return N->getConstantOperandVal(OldIdx + 1) ? APInt::getLowBitsSet(32, 16)
-                                              : APInt::getHighBitsSet(32, 16);
+static APInt getPackedF8PreservedBits(const SDNode *N,
+                                      const PackedF8Operands &Operands) {
+  return N->getConstantOperandVal(Operands.Selector)
+             ? APInt::getLowBitsSet(32, 16)
+             : APInt::getHighBitsSet(32, 16);
 }
 
 static APInt getPackedF8ResultDemandedBits(const SDUse &Use) {
   const SDNode *User = Use.getUser();
-  if (std::optional<unsigned> OldIdx = getPackedF8OldOperand(User);
-      OldIdx && Use.getOperandNo() == *OldIdx)
-    return getPackedF8PreservedBits(User, *OldIdx);
+  if (std::optional<PackedF8Operands> Operands = getPackedF8Operands(User);
+      Operands && Use.getOperandNo() == Operands->Old)
+    return getPackedF8PreservedBits(User, *Operands);
 
   if (User->getOpcode() == ISD::TRUNCATE)
     return APInt::getLowBitsSet(32, User->getValueType(0).getSizeInBits());
@@ -4336,9 +4365,9 @@ static APInt getPackedF8ResultDemandedBits(const SDUse &Use) {
 static SDValue
 performPackedF8ConversionCombine(SDNode *N,
                                  TargetLowering::DAGCombinerInfo &DCI) {
-  unsigned OldIdx = *getPackedF8OldOperand(N);
-  SDValue Old = N->getOperand(OldIdx);
-  APInt Preserved = getPackedF8PreservedBits(N, OldIdx);
+  PackedF8Operands Operands = *getPackedF8Operands(N);
+  SDValue Old = N->getOperand(Operands.Old);
+  APInt Preserved = getPackedF8PreservedBits(N, Operands);
 
   // SimplifyDemandedBits handles single uses. A shared result needs every user
   // to discard the preserved half before its old operand can be dropped.
@@ -4352,7 +4381,7 @@ performPackedF8ConversionCombine(SDNode *N,
 
     if (!Demanded.intersects(Preserved)) {
       SmallVector<SDValue, 5> Ops(N->op_values());
-      Ops[OldIdx] = DCI.DAG.getUNDEF(MVT::i32);
+      Ops[Operands.Old] = DCI.DAG.getUNDEF(MVT::i32);
       return DCI.DAG.getNode(N->getOpcode(), SDLoc(N), MVT::i32, Ops,
                              N->getFlags());
     }
@@ -5953,13 +5982,14 @@ bool AMDGPUTargetLowering::SimplifyDemandedBitsForTargetNode(
     SDValue Op, const APInt &OriginalDemandedBits,
     const APInt &OriginalDemandedElts, KnownBits &Known, TargetLoweringOpt &TLO,
     unsigned Depth) const {
-  if (std::optional<unsigned> OldIdx = getPackedF8OldOperand(Op.getNode())) {
-    SDValue Old = Op.getOperand(*OldIdx);
-    APInt Preserved = getPackedF8PreservedBits(Op.getNode(), *OldIdx);
+  if (std::optional<PackedF8Operands> Operands =
+          getPackedF8Operands(Op.getNode())) {
+    SDValue Old = Op.getOperand(Operands->Old);
+    APInt Preserved = getPackedF8PreservedBits(Op.getNode(), *Operands);
     APInt DemandedOld = OriginalDemandedBits & Preserved;
     if (DemandedOld.isZero() && !Old.isUndef()) {
       SmallVector<SDValue, 5> Ops(Op->op_values());
-      Ops[*OldIdx] = TLO.DAG.getUNDEF(MVT::i32);
+      Ops[Operands->Old] = TLO.DAG.getUNDEF(MVT::i32);
       return TLO.CombineTo(Op, TLO.DAG.getNode(Op.getOpcode(), SDLoc(Op),
                                                MVT::i32, Ops, Op->getFlags()));
     }
