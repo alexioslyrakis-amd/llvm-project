@@ -4289,8 +4289,8 @@ SDValue AMDGPUTargetLowering::performAssertSZExtCombine(SDNode *N,
 }
 
 struct PackedF8Operands {
-  unsigned Old;
-  unsigned Selector;
+  unsigned OldIdx;
+  unsigned SelectorIdx;
 };
 
 static bool isPackedF8Node(const SDNode *N, bool &IsIntrinsic) {
@@ -4326,11 +4326,11 @@ static std::optional<PackedF8Operands> getPackedF8Operands(const SDNode *N) {
     return std::nullopt;
 
   // The intrinsic form has its intrinsic ID before the source operands.
-  unsigned Old = IsIntrinsic ? 3 : 2;
-  PackedF8Operands Operands{Old, Old + 1};
-  assert(N->getNumOperands() == Operands.Selector + 1 &&
+  unsigned OldIdx = IsIntrinsic ? 3 : 2;
+  PackedF8Operands Operands{OldIdx, OldIdx + 1};
+  assert(N->getNumOperands() == Operands.SelectorIdx + 1 &&
          "unexpected packed FP8 conversion operand layout");
-  assert(isa<ConstantSDNode>(N->getOperand(Operands.Selector)) &&
+  assert(isa<ConstantSDNode>(N->getOperand(Operands.SelectorIdx)) &&
          "packed FP8 conversion selector must be constant");
   return Operands;
 }
@@ -4339,7 +4339,7 @@ static std::optional<PackedF8Operands> getPackedF8Operands(const SDNode *N) {
 // is copied from the old destination operand.
 static APInt getPackedF8PreservedBits(const SDNode *N,
                                       const PackedF8Operands &Operands) {
-  return N->getConstantOperandVal(Operands.Selector)
+  return N->getConstantOperandVal(Operands.SelectorIdx)
              ? APInt::getLowBitsSet(32, 16)
              : APInt::getHighBitsSet(32, 16);
 }
@@ -4347,7 +4347,7 @@ static APInt getPackedF8PreservedBits(const SDNode *N,
 static APInt getPackedF8ResultDemandedBits(const SDUse &Use) {
   const SDNode *User = Use.getUser();
   if (std::optional<PackedF8Operands> Operands = getPackedF8Operands(User);
-      Operands && Use.getOperandNo() == Operands->Old)
+      Operands && Use.getOperandNo() == Operands->OldIdx)
     return getPackedF8PreservedBits(User, *Operands);
 
   if (User->getOpcode() == ISD::TRUNCATE)
@@ -4366,7 +4366,7 @@ static SDValue
 performPackedF8ConversionCombine(SDNode *N,
                                  TargetLowering::DAGCombinerInfo &DCI) {
   PackedF8Operands Operands = *getPackedF8Operands(N);
-  SDValue Old = N->getOperand(Operands.Old);
+  SDValue Old = N->getOperand(Operands.OldIdx);
   APInt Preserved = getPackedF8PreservedBits(N, Operands);
 
   // SimplifyDemandedBits handles single uses. A shared result needs every user
@@ -4381,7 +4381,7 @@ performPackedF8ConversionCombine(SDNode *N,
 
     if (!Demanded.intersects(Preserved)) {
       SmallVector<SDValue, 5> Ops(N->op_values());
-      Ops[Operands.Old] = DCI.DAG.getUNDEF(MVT::i32);
+      Ops[Operands.OldIdx] = DCI.DAG.getUNDEF(MVT::i32);
       return DCI.DAG.getNode(N->getOpcode(), SDLoc(N), MVT::i32, Ops,
                              N->getFlags());
     }
@@ -5984,12 +5984,12 @@ bool AMDGPUTargetLowering::SimplifyDemandedBitsForTargetNode(
     unsigned Depth) const {
   if (std::optional<PackedF8Operands> Operands =
           getPackedF8Operands(Op.getNode())) {
-    SDValue Old = Op.getOperand(Operands->Old);
+    SDValue Old = Op.getOperand(Operands->OldIdx);
     APInt Preserved = getPackedF8PreservedBits(Op.getNode(), *Operands);
     APInt DemandedOld = OriginalDemandedBits & Preserved;
     if (DemandedOld.isZero() && !Old.isUndef()) {
       SmallVector<SDValue, 5> Ops(Op->op_values());
-      Ops[Operands->Old] = TLO.DAG.getUNDEF(MVT::i32);
+      Ops[Operands->OldIdx] = TLO.DAG.getUNDEF(MVT::i32);
       return TLO.CombineTo(Op, TLO.DAG.getNode(Op.getOpcode(), SDLoc(Op),
                                                MVT::i32, Ops, Op->getFlags()));
     }
