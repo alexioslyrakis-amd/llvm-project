@@ -4344,7 +4344,7 @@ static APInt getPackedF8PreservedBits(const SDNode *N,
              : APInt::getHighBitsSet(32, 16);
 }
 
-static APInt getPackedF8ResultDemandedBits(const SDUse &Use) {
+static APInt getPackedF8UserDemandedBits(const SDUse &Use) {
   const SDNode *User = Use.getUser();
   if (std::optional<PackedF8Operands> Operands = getPackedF8Operands(User);
       Operands && Use.getOperandNo() == Operands->OldIdx)
@@ -4367,19 +4367,19 @@ performPackedF8ConversionCombine(SDNode *N,
                                  TargetLowering::DAGCombinerInfo &DCI) {
   PackedF8Operands Operands = *getPackedF8Operands(N);
   SDValue Old = N->getOperand(Operands.OldIdx);
-  APInt Preserved = getPackedF8PreservedBits(N, Operands);
+  APInt PreservedOldBits = getPackedF8PreservedBits(N, Operands);
 
   // SimplifyDemandedBits handles single uses. A shared result needs every user
   // to discard the preserved half before its old operand can be dropped.
   if (!Old.isUndef() && !N->hasOneUse()) {
-    APInt Demanded(32, 0);
+    APInt UsersDemandedBits(32, 0);
     for (const SDUse &Use : N->uses()) {
-      Demanded |= getPackedF8ResultDemandedBits(Use);
-      if (Demanded.intersects(Preserved))
+      UsersDemandedBits |= getPackedF8UserDemandedBits(Use);
+      if (UsersDemandedBits.intersects(PreservedOldBits))
         break;
     }
 
-    if (!Demanded.intersects(Preserved)) {
+    if (!UsersDemandedBits.intersects(PreservedOldBits)) {
       SmallVector<SDValue, 5> Ops(N->op_values());
       Ops[Operands.OldIdx] = DCI.DAG.getUNDEF(MVT::i32);
       return DCI.DAG.getNode(N->getOpcode(), SDLoc(N), MVT::i32, Ops,
@@ -4388,7 +4388,7 @@ performPackedF8ConversionCombine(SDNode *N,
   }
 
   const TargetLowering &TLI = DCI.DAG.getTargetLoweringInfo();
-  if (TLI.SimplifyDemandedBits(Old, Preserved, DCI))
+  if (TLI.SimplifyDemandedBits(Old, PreservedOldBits, DCI))
     return SDValue(N, 0);
   return SDValue();
 }
@@ -5985,9 +5985,9 @@ bool AMDGPUTargetLowering::SimplifyDemandedBitsForTargetNode(
   if (std::optional<PackedF8Operands> Operands =
           getPackedF8Operands(Op.getNode())) {
     SDValue Old = Op.getOperand(Operands->OldIdx);
-    APInt Preserved = getPackedF8PreservedBits(Op.getNode(), *Operands);
-    APInt DemandedOld = OriginalDemandedBits & Preserved;
-    if (DemandedOld.isZero() && !Old.isUndef()) {
+    APInt PreservedOldBits = getPackedF8PreservedBits(Op.getNode(), *Operands);
+    APInt OldDemandedBits = OriginalDemandedBits & PreservedOldBits;
+    if (OldDemandedBits.isZero() && !Old.isUndef()) {
       SmallVector<SDValue, 5> Ops(Op->op_values());
       Ops[Operands->OldIdx] = TLO.DAG.getUNDEF(MVT::i32);
       return TLO.CombineTo(Op, TLO.DAG.getNode(Op.getOpcode(), SDLoc(Op),
@@ -5995,11 +5995,11 @@ bool AMDGPUTargetLowering::SimplifyDemandedBitsForTargetNode(
     }
 
     KnownBits KnownOld(32);
-    if (SimplifyDemandedBits(Old, DemandedOld, OriginalDemandedElts, KnownOld,
-                             TLO, Depth + 1))
+    if (SimplifyDemandedBits(Old, OldDemandedBits, OriginalDemandedElts,
+                             KnownOld, TLO, Depth + 1))
       return true;
-    Known.Zero = KnownOld.Zero & Preserved;
-    Known.One = KnownOld.One & Preserved;
+    Known.Zero = KnownOld.Zero & PreservedOldBits;
+    Known.One = KnownOld.One & PreservedOldBits;
     return false;
   }
 
