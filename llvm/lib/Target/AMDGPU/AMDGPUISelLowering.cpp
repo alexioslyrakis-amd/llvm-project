@@ -4369,28 +4369,22 @@ performPackedF8ConversionCombine(SDNode *N,
   SDValue Old = N->getOperand(Operands.OldIdx);
   APInt PreservedOldBits = getPackedF8PreservedBits(N, Operands);
 
-  // SimplifyDemandedBits handles single uses. A shared result needs every user
-  // to discard the preserved half before its old operand can be dropped.
-  if (!Old.isUndef() && !N->hasOneUse()) {
-    APInt UsersDemandedBits(32, 0);
-    for (const SDUse &Use : N->uses()) {
-      UsersDemandedBits |= getPackedF8UserDemandedBits(Use);
-      if (UsersDemandedBits.intersects(PreservedOldBits))
-        break;
-    }
+  if (Old.isUndef() || N->use_empty())
+    return SDValue();
 
-    if (!UsersDemandedBits.intersects(PreservedOldBits)) {
-      SmallVector<SDValue, 5> Ops(N->op_values());
-      Ops[Operands.OldIdx] = DCI.DAG.getUNDEF(MVT::i32);
-      return DCI.DAG.getNode(N->getOpcode(), SDLoc(N), MVT::i32, Ops,
-                             N->getFlags());
-    }
+  // Every user must discard the half copied from Old before Old can be
+  // replaced. This preserves shared conversion results.
+  APInt UsersDemandedBits(32, 0);
+  for (const SDUse &Use : N->uses()) {
+    UsersDemandedBits |= getPackedF8UserDemandedBits(Use);
+    if (UsersDemandedBits.intersects(PreservedOldBits))
+      return SDValue();
   }
 
-  const TargetLowering &TLI = DCI.DAG.getTargetLoweringInfo();
-  if (TLI.SimplifyDemandedBits(Old, PreservedOldBits, DCI))
-    return SDValue(N, 0);
-  return SDValue();
+  SmallVector<SDValue, 5> Ops(N->op_values());
+  Ops[Operands.OldIdx] = DCI.DAG.getUNDEF(MVT::i32);
+  return DCI.DAG.getNode(N->getOpcode(), SDLoc(N), MVT::i32, Ops,
+                         N->getFlags());
 }
 
 SDValue AMDGPUTargetLowering::performIntrinsicWOChainCombine(
@@ -5993,13 +5987,6 @@ bool AMDGPUTargetLowering::SimplifyDemandedBitsForTargetNode(
       return TLO.CombineTo(Op, TLO.DAG.getNode(Op.getOpcode(), SDLoc(Op),
                                                MVT::i32, Ops, Op->getFlags()));
     }
-
-    KnownBits KnownOld(32);
-    if (SimplifyDemandedBits(Old, OldDemandedBits, OriginalDemandedElts,
-                             KnownOld, TLO, Depth + 1))
-      return true;
-    Known.Zero = KnownOld.Zero & PreservedOldBits;
-    Known.One = KnownOld.One & PreservedOldBits;
     return false;
   }
 
